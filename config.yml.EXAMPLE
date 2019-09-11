@@ -1,0 +1,12 @@
+---
+AWSBucket: ""
+Region: ""
+Env: ""
+LogDirectory: ""
+LogTypes:
+  PostmasteryLogs:
+    DirectoryName: ""
+    LogPrefix: ""
+  MTALogs:
+    DirectoryName: ""
+    LogPrefix: ""
