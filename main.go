@@ -20,11 +20,24 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+type debugLogger struct {
+	enableDebug bool
+}
+
+func (d *debugLogger) Debug(args ...interface{}) {
+	if d.enableDebug {
+		log.Print(args...)
+	}
+}
+
+var dbug = debugLogger{}
+
 type Config struct {
 	AWSBucket    string                       `yaml:"AWSBucket"`
 	Env          string                       `yaml:"Env"`
 	Region       string                       `yaml:"Region"`
 	LogDirectory string                       `yaml:"LogDirectory"`
+	Debug        bool                         `yaml:"Debug"`
 	LogTypes     map[string]map[string]string `yaml:"LogTypes"`
 }
 
@@ -57,6 +70,11 @@ func readConfig() Config {
 }
 
 func awsConnect(c *Config) (*session.Session, error) {
+	if c.Env == "" {
+		return session.NewSession(&aws.Config{
+			Region: aws.String(c.Region),
+		})
+	}
 	return session.NewSession(&aws.Config{
 		Region:      aws.String(c.Region),
 		Credentials: credentials.NewSharedCredentials("", c.Env),
@@ -82,24 +100,26 @@ func s3Upload(bucket, key, myFile string, sess *session.Session) error {
 }
 
 func listFiles(logDir string) ([]string, error) {
+	dbug.Debug("Filepath received: ", logDir)
 	var files []string
 
 	err := filepath.Walk(logDir, func(path string, info os.FileInfo, err error) error {
+		path = strings.ReplaceAll(path, logDir, "")
 		files = append(files, path)
 		return nil
 	})
-
+	dbug.Debug(files)
 	return files, err
 
 }
 
-func checkObjectExits(sess *session.Session, AWSBucket, key string) bool {
+func checkObjectExits(sess *session.Session, AWSBucket, key string, fileSize int64) bool {
 	svc := s3.New(sess)
 	input := &s3.HeadObjectInput{
 		Bucket: aws.String(AWSBucket),
 		Key:    aws.String(key),
 	}
-	_, err := svc.HeadObject(input)
+	result, err := svc.HeadObject(input)
 	if err != nil {
 		if aerr, ok := err.(awserr.Error); ok {
 			switch aerr.Code() {
@@ -110,14 +130,20 @@ func checkObjectExits(sess *session.Session, AWSBucket, key string) bool {
 			}
 		}
 	}
+	if *result.ContentLength != fileSize {
+		return false
+	}
 	return true
 }
 
 func main() {
+
 	configFile = flag.String("config", "config.yml", "Config file location")
 	flag.Parse()
 
 	config := readConfig()
+
+	dbug.enableDebug = config.Debug
 
 	sess, err := awsConnect(&config)
 	if err != nil {
@@ -147,8 +173,14 @@ func main() {
 			for _, a := range config.LogTypes {
 				if strings.HasPrefix(file, a["LogPrefix"]) && strings.HasSuffix(file, ".csv") {
 					key := fmt.Sprintf("%v/%v/%v/%v", a["DirectoryName"], dateToday, hostname, file)
-					if !checkObjectExits(sess, config.AWSBucket, key) {
-						err = s3Upload(config.AWSBucket, key, file, sess)
+					fileNamePath := fmt.Sprintf("%v%v", config.LogDirectory, file)
+
+					fi, err := os.Stat(fileNamePath)
+					if err != nil {
+						log.Fatal(err)
+					}
+					if !checkObjectExits(sess, config.AWSBucket, key, fi.Size()) {
+						err = s3Upload(config.AWSBucket, key, fileNamePath, sess)
 						if err != nil {
 							log.Fatal(err)
 						}
